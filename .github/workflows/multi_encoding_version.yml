@@ -6,10 +6,10 @@ on:
     paths:
       - "src/**.sas"
       - "multi_encoding_converter.py"
+      - ".github/workflows/multi_encoding_version.yml"
 
 permissions:
   contents: write
-  pull-requests: write
 
 defaults:
   run:
@@ -21,6 +21,18 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify checked-out PR head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "::error::The checked-out commit does not match the PR head from this event."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,7 +40,10 @@ jobs:
           python-version: 3.13
 
       - name: Run converter
-        run: python multi_encoding_converter.py
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python multi_encoding_converter.py --base-ref "$BASE_SHA" --head-ref "$HEAD_SHA"
 
       - name: Configure Git
         run: |
@@ -42,17 +57,18 @@ jobs:
             echo "has_changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit changes
-        if: ${{ steps.check_changes.outputs.has_changed == 'true' }}
+      - name: Reject fork PR write-back
+        if: ${{ steps.check_changes.outputs.has_changed == 'true' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
-          git add .
-          git commit -m "chore: multi encoding version"
-          git pull --rebase origin ${{ github.head_ref }}
-          git push origin HEAD:${{ github.head_ref }}
+          echo "::error::Automatic encoding sync can only push to PR branches in this repository. Apply the generated copies in the fork branch manually."
+          exit 1
 
-      - name: Push changes
+      - name: Commit and push changes
         if: ${{ steps.check_changes.outputs.has_changed == 'true' }}
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.head_ref }}
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git add src/gbk src/utf8 src/utf16 src/gb18030
+          git commit -m "chore: multi encoding version"
+          git push --force-with-lease="refs/heads/$HEAD_REF:$HEAD_SHA" origin "HEAD:refs/heads/$HEAD_REF"
